@@ -51,6 +51,7 @@ Options can be passed to the constructor or using the `setOptions` method.
 | repeat       | `0`             | repeat count, `-1` = no repeat, `0` = forever      |
 | quality      | `10`            | pixel sample interval, lower is better             |
 | workers      | `2`             | number of web workers to spawn                     |
+| cleanUp      | `true`          | whether to kill web workers after or not           |
 | workerScript | `gif.worker.js` | url to load worker script from                     |
 | background   | `#fff`          | background color where source image is transparent |
 | width        | `null`          | output image width                                 |
