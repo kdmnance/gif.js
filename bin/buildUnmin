@@ -5,25 +5,23 @@ TMP="./dist/tmp"
 
 if [ -f ./node_modules/.bin/cjsify ]; then
   VERSION=`./bin/version`
-  echo "Packaging gif.min.js $VERSION"
+  echo "Packaging gif.js $VERSION"
   ./node_modules/.bin/cjsify \
     --export GIF \
     --root ./src/ \
-    --source-map ./dist/gif.min.js.map \
-    --output ./dist/gif.min.js \
+    --source-map ./dist/gif.js.map \
+    --output ./dist/gif.js \
     --inline-sources \
-    --minify \
     gif.coffee
-  echo -e "\n// gif.js $VERSION - $URL" >> ./dist/gif.min.js
+  echo -e "\n// gif.js $VERSION - $URL" >> ./dist/gif.js
   ./node_modules/.bin/cjsify \
     --root ./src/ \
     --no-node \
-    --source-map ./dist/gif.worker.min.js.map \
-    --output ./dist/gif.worker.min.js \
+    --source-map ./dist/gif.worker.js.map \
+    --output ./dist/gif.worker.js \
     --inline-sources \
-    --minify \
     gif.worker.coffee
-  echo -e "\n// gif.worker.js $VERSION - $URL" >> ./dist/gif.worker.min.js
+  echo -e "\n// gif.worker.js $VERSION - $URL" >> ./dist/gif.worker.js
   exit $?
 else
   echo "Dependencies missing. Run npm install"
