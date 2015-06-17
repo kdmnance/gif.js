@@ -6,6 +6,7 @@ class GIF extends EventEmitter
   defaults =
     workerScript: 'gif.worker.js'
     workers: 2
+    cleanUp: true
     repeat: 0 # repeat forever, -1 = repeat once
     background: '#fff'
     quality: 10 # pixel sample interval, lower is better
@@ -95,6 +96,16 @@ class GIF extends EventEmitter
     @running = false
     @emit 'abort'
 
+  cleanUp: ->
+    # if a user runs multiple jobs, especially with a higher number of workers, it can crash the browser
+    # if you enable cleanUp, you'll have to initiate a new GIF object for each job
+    console.log "killing workers"
+    loop
+      worker = @freeWorkers.shift()
+      break unless worker?
+      worker.terminate()
+    return true
+
   # private
 
   spawnWorkers: ->
@@ -142,6 +153,9 @@ class GIF extends EventEmitter
 
     image = new Blob [data],
       type: 'image/gif'
+
+    if @options.cleanUp == true
+      @cleanUp()
 
     @emit 'finished', image, data
 
