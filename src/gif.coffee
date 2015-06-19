@@ -85,7 +85,7 @@ class GIF extends EventEmitter
       @renderNextFrame() for i in [0...numWorkers]
 
     @emit 'start'
-    @emit 'progress', 0
+    @emit 'progress', 0 # start the progress counter
 
   abort: ->
     loop
@@ -123,7 +123,7 @@ class GIF extends EventEmitter
   frameFinished: (frame) ->
     console.log "frame #{ frame.index } finished - #{ @activeWorkers.length } active"
     @finishedFrames++
-    @emit 'progress', @finishedFrames / @frames.length
+    @emit 'progress', @finishedFrames / @frames.length # set progress to # finished frames out of total
     @imageParts[frame.index] = frame
     # remember calculated palette, spawn the rest of the workers
     if @options.globalPalette == true

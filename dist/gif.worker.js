@@ -75,7 +75,7 @@
     };
   });
   require.define('/GIFEncoder.js', function (module, exports, __dirname, __filename) {
-    var NeuQuant = require('/TypedNeuQuant.js', module);
+    var NeuQuant = require('/rgbquant.js', module);
     var LZWEncoder = require('/LZWEncoder.js', module);
     function ByteArray() {
       this.page = -1;
@@ -665,301 +665,916 @@
     }
     module.exports = LZWEncoder;
   });
-  require.define('/TypedNeuQuant.js', function (module, exports, __dirname, __filename) {
-    var ncycles = 100;
-    var netsize = 256;
-    var maxnetpos = netsize - 1;
-    var netbiasshift = 4;
-    var intbiasshift = 16;
-    var intbias = 1 << intbiasshift;
-    var gammashift = 10;
-    var gamma = 1 << gammashift;
-    var betashift = 10;
-    var beta = intbias >> betashift;
-    var betagamma = intbias << gammashift - betashift;
-    var initrad = netsize >> 3;
-    var radiusbiasshift = 6;
-    var radiusbias = 1 << radiusbiasshift;
-    var initradius = initrad * radiusbias;
-    var radiusdec = 30;
-    var alphabiasshift = 10;
-    var initalpha = 1 << alphabiasshift;
-    var alphadec;
-    var radbiasshift = 8;
-    var radbias = 1 << radbiasshift;
-    var alpharadbshift = alphabiasshift + radbiasshift;
-    var alpharadbias = 1 << alpharadbshift;
-    var prime1 = 499;
-    var prime2 = 491;
-    var prime3 = 487;
-    var prime4 = 503;
-    var minpicturebytes = 3 * prime4;
-    function NeuQuant(pixels, samplefac) {
-      var network;
-      var netindex;
-      var bias;
-      var freq;
-      var radpower;
-      function init() {
-        network = [];
-        netindex = new Int32Array(256);
-        bias = new Int32Array(netsize);
-        freq = new Int32Array(netsize);
-        radpower = new Int32Array(netsize >> 3);
-        var i, v;
-        for (i = 0; i < netsize; i++) {
-          v = (i << netbiasshift + 8) / netsize;
-          network[i] = new Float64Array([
-            v,
-            v,
-            v,
-            0
-          ]);
-          freq[i] = intbias / netsize;
-          bias[i] = 0;
+  require.define('/rgbquant.js', function (module, exports, __dirname, __filename) {
+    (function () {
+      function RgbQuant(opts) {
+        opts = opts || {};
+        this.method = opts.method || 2;
+        this.colors = opts.colors || 256;
+        this.initColors = opts.initColors || 4096;
+        this.initDist = opts.initDist || .01;
+        this.distIncr = opts.distIncr || .005;
+        this.hueGroups = opts.hueGroups || 10;
+        this.satGroups = opts.satGroups || 10;
+        this.lumGroups = opts.lumGroups || 10;
+        this.minHueCols = opts.minHueCols || 0;
+        this.hueStats = this.minHueCols ? new HueStats(this.hueGroups, this.minHueCols) : null;
+        this.boxSize = opts.boxSize || [
+          64,
+          64
+        ];
+        this.boxPxls = opts.boxPxls || 2;
+        this.palLocked = false;
+        this.dithKern = opts.dithKern || null;
+        this.dithSerp = opts.dithSerp || false;
+        this.dithDelta = opts.dithDelta || 0;
+        this.histogram = {};
+        this.idxrgb = opts.palette ? opts.palette.slice(0) : [];
+        this.idxi32 = [];
+        this.i32idx = {};
+        this.i32rgb = {};
+        this.useCache = opts.useCache !== false;
+        this.cacheFreq = opts.cacheFreq || 10;
+        this.reIndex = opts.reIndex || this.idxrgb.length == 0;
+        this.colorDist = opts.colorDist == 'manhattan' ? distManhattan : distEuclidean;
+        if (this.idxrgb.length > 0) {
+          var self = this;
+          this.idxrgb.forEach(function (rgb, i) {
+            var i32 = (255 << 24 | rgb[2] << 16 | rgb[1] << 8 | rgb[0]) >>> 0;
+            self.idxi32[i] = i32;
+            self.i32idx[i32] = i;
+            self.i32rgb[i32] = rgb;
+          });
         }
       }
-      function unbiasnet() {
-        for (var i = 0; i < netsize; i++) {
-          network[i][0] >>= netbiasshift;
-          network[i][1] >>= netbiasshift;
-          network[i][2] >>= netbiasshift;
-          network[i][3] = i;
+      RgbQuant.prototype.sample = function sample(img, width) {
+        if (this.palLocked)
+          throw 'Cannot sample additional images, palette already assembled.';
+        var data = getImageData(img, width);
+        switch (this.method) {
+        case 1:
+          this.colorStats1D(data.buf32);
+          break;
+        case 2:
+          this.colorStats2D(data.buf32, data.width);
+          break;
         }
-      }
-      function altersingle(alpha, i, b, g, r) {
-        network[i][0] -= alpha * (network[i][0] - b) / initalpha;
-        network[i][1] -= alpha * (network[i][1] - g) / initalpha;
-        network[i][2] -= alpha * (network[i][2] - r) / initalpha;
-      }
-      function alterneigh(radius, i, b, g, r) {
-        var lo = Math.abs(i - radius);
-        var hi = Math.min(i + radius, netsize);
-        var j = i + 1;
-        var k = i - 1;
-        var m = 1;
-        var p, a;
-        while (j < hi || k > lo) {
-          a = radpower[m++];
-          if (j < hi) {
-            p = network[j++];
-            p[0] -= a * (p[0] - b) / alpharadbias;
-            p[1] -= a * (p[1] - g) / alpharadbias;
-            p[2] -= a * (p[2] - r) / alpharadbias;
-          }
-          if (k > lo) {
-            p = network[k--];
-            p[0] -= a * (p[0] - b) / alpharadbias;
-            p[1] -= a * (p[1] - g) / alpharadbias;
-            p[2] -= a * (p[2] - r) / alpharadbias;
+      };
+      RgbQuant.prototype.reduce = function reduce(img, retType, dithKern, dithSerp) {
+        if (!this.palLocked)
+          this.buildPal();
+        dithKern = dithKern || this.dithKern;
+        dithSerp = typeof dithSerp != 'undefined' ? dithSerp : this.dithSerp;
+        retType = retType || 1;
+        if (dithKern)
+          var out32 = this.dither(img, dithKern, dithSerp);
+        else {
+          var data = getImageData(img), buf32 = data.buf32, len = buf32.length, out32 = new Uint32Array(len);
+          for (var i = 0; i < len; i++) {
+            var i32 = buf32[i];
+            out32[i] = this.nearestColor(i32);
           }
         }
-      }
-      function contest(b, g, r) {
-        var bestd = ~(1 << 31);
-        var bestbiasd = bestd;
-        var bestpos = -1;
-        var bestbiaspos = bestpos;
-        var i, n, dist, biasdist, betafreq;
-        for (i = 0; i < netsize; i++) {
-          n = network[i];
-          dist = Math.abs(n[0] - b) + Math.abs(n[1] - g) + Math.abs(n[2] - r);
-          if (dist < bestd) {
-            bestd = dist;
-            bestpos = i;
+        if (retType == 1)
+          return new Uint8Array(out32.buffer);
+        if (retType == 2) {
+          var out = [], len = out32.length;
+          for (var i = 0; i < len; i++) {
+            var i32 = out32[i];
+            out[i] = this.i32idx[i32];
           }
-          biasdist = dist - (bias[i] >> intbiasshift - netbiasshift);
-          if (biasdist < bestbiasd) {
-            bestbiasd = biasdist;
-            bestbiaspos = i;
-          }
-          betafreq = freq[i] >> betashift;
-          freq[i] -= betafreq;
-          bias[i] += betafreq << gammashift;
+          return out;
         }
-        freq[bestpos] += beta;
-        bias[bestpos] -= betagamma;
-        return bestbiaspos;
-      }
-      function inxbuild() {
-        var i, j, p, q, smallpos, smallval, previouscol = 0, startpos = 0;
-        for (i = 0; i < netsize; i++) {
-          p = network[i];
-          smallpos = i;
-          smallval = p[1];
-          for (j = i + 1; j < netsize; j++) {
-            q = network[j];
-            if (q[1] < smallval) {
-              smallpos = j;
-              smallval = q[1];
+      };
+      RgbQuant.prototype.dither = function (img, kernel, serpentine) {
+        var kernels = {
+            FloydSteinberg: [
+              [
+                7 / 16,
+                1,
+                0
+              ],
+              [
+                3 / 16,
+                -1,
+                1
+              ],
+              [
+                5 / 16,
+                0,
+                1
+              ],
+              [
+                1 / 16,
+                1,
+                1
+              ]
+            ],
+            FalseFloydSteinberg: [
+              [
+                3 / 8,
+                1,
+                0
+              ],
+              [
+                3 / 8,
+                0,
+                1
+              ],
+              [
+                2 / 8,
+                1,
+                1
+              ]
+            ],
+            Stucki: [
+              [
+                8 / 42,
+                1,
+                0
+              ],
+              [
+                4 / 42,
+                2,
+                0
+              ],
+              [
+                2 / 42,
+                -2,
+                1
+              ],
+              [
+                4 / 42,
+                -1,
+                1
+              ],
+              [
+                8 / 42,
+                0,
+                1
+              ],
+              [
+                4 / 42,
+                1,
+                1
+              ],
+              [
+                2 / 42,
+                2,
+                1
+              ],
+              [
+                1 / 42,
+                -2,
+                2
+              ],
+              [
+                2 / 42,
+                -1,
+                2
+              ],
+              [
+                4 / 42,
+                0,
+                2
+              ],
+              [
+                2 / 42,
+                1,
+                2
+              ],
+              [
+                1 / 42,
+                2,
+                2
+              ]
+            ],
+            Atkinson: [
+              [
+                1 / 8,
+                1,
+                0
+              ],
+              [
+                1 / 8,
+                2,
+                0
+              ],
+              [
+                1 / 8,
+                -1,
+                1
+              ],
+              [
+                1 / 8,
+                0,
+                1
+              ],
+              [
+                1 / 8,
+                1,
+                1
+              ],
+              [
+                1 / 8,
+                0,
+                2
+              ]
+            ],
+            Jarvis: [
+              [
+                7 / 48,
+                1,
+                0
+              ],
+              [
+                5 / 48,
+                2,
+                0
+              ],
+              [
+                3 / 48,
+                -2,
+                1
+              ],
+              [
+                5 / 48,
+                -1,
+                1
+              ],
+              [
+                7 / 48,
+                0,
+                1
+              ],
+              [
+                5 / 48,
+                1,
+                1
+              ],
+              [
+                3 / 48,
+                2,
+                1
+              ],
+              [
+                1 / 48,
+                -2,
+                2
+              ],
+              [
+                3 / 48,
+                -1,
+                2
+              ],
+              [
+                5 / 48,
+                0,
+                2
+              ],
+              [
+                3 / 48,
+                1,
+                2
+              ],
+              [
+                1 / 48,
+                2,
+                2
+              ]
+            ],
+            Burkes: [
+              [
+                8 / 32,
+                1,
+                0
+              ],
+              [
+                4 / 32,
+                2,
+                0
+              ],
+              [
+                2 / 32,
+                -2,
+                1
+              ],
+              [
+                4 / 32,
+                -1,
+                1
+              ],
+              [
+                8 / 32,
+                0,
+                1
+              ],
+              [
+                4 / 32,
+                1,
+                1
+              ],
+              [
+                2 / 32,
+                2,
+                1
+              ]
+            ],
+            Sierra: [
+              [
+                5 / 32,
+                1,
+                0
+              ],
+              [
+                3 / 32,
+                2,
+                0
+              ],
+              [
+                2 / 32,
+                -2,
+                1
+              ],
+              [
+                4 / 32,
+                -1,
+                1
+              ],
+              [
+                5 / 32,
+                0,
+                1
+              ],
+              [
+                4 / 32,
+                1,
+                1
+              ],
+              [
+                2 / 32,
+                2,
+                1
+              ],
+              [
+                2 / 32,
+                -1,
+                2
+              ],
+              [
+                3 / 32,
+                0,
+                2
+              ],
+              [
+                2 / 32,
+                1,
+                2
+              ]
+            ],
+            TwoSierra: [
+              [
+                4 / 16,
+                1,
+                0
+              ],
+              [
+                3 / 16,
+                2,
+                0
+              ],
+              [
+                1 / 16,
+                -2,
+                1
+              ],
+              [
+                2 / 16,
+                -1,
+                1
+              ],
+              [
+                3 / 16,
+                0,
+                1
+              ],
+              [
+                2 / 16,
+                1,
+                1
+              ],
+              [
+                1 / 16,
+                2,
+                1
+              ]
+            ],
+            SierraLite: [
+              [
+                2 / 4,
+                1,
+                0
+              ],
+              [
+                1 / 4,
+                -1,
+                1
+              ],
+              [
+                1 / 4,
+                0,
+                1
+              ]
+            ]
+          };
+        if (!kernel || !kernels[kernel]) {
+          throw 'Unknown dithering kernel: ' + kernel;
+        }
+        var ds = kernels[kernel];
+        var data = getImageData(img), buf32 = data.buf32, width = data.width, height = data.height, len = buf32.length;
+        var dir = serpentine ? -1 : 1;
+        for (var y = 0; y < height; y++) {
+          if (serpentine)
+            dir = dir * -1;
+          var lni = y * width;
+          for (var x = dir == 1 ? 0 : width - 1, xend = dir == 1 ? width : 0; x !== xend; x += dir) {
+            var idx = lni + x, i32 = buf32[idx], r1 = i32 & 255, g1 = (i32 & 65280) >> 8, b1 = (i32 & 16711680) >> 16;
+            var i32x = this.nearestColor(i32), r2 = i32x & 255, g2 = (i32x & 65280) >> 8, b2 = (i32x & 16711680) >> 16;
+            buf32[idx] = 255 << 24 | b2 << 16 | g2 << 8 | r2;
+            if (this.dithDelta) {
+              var dist = this.colorDist([
+                  r1,
+                  g1,
+                  b1
+                ], [
+                  r2,
+                  g2,
+                  b2
+                ]);
+              if (dist < this.dithDelta)
+                continue;
+            }
+            var er = r1 - r2, eg = g1 - g2, eb = b1 - b2;
+            for (var i = dir == 1 ? 0 : ds.length - 1, end = dir == 1 ? ds.length : 0; i !== end; i += dir) {
+              var x1 = ds[i][1] * dir, y1 = ds[i][2];
+              var lni2 = y1 * width;
+              if (x1 + x >= 0 && x1 + x < width && y1 + y >= 0 && y1 + y < height) {
+                var d = ds[i][0];
+                var idx2 = idx + (lni2 + x1);
+                var r3 = buf32[idx2] & 255, g3 = (buf32[idx2] & 65280) >> 8, b3 = (buf32[idx2] & 16711680) >> 16;
+                var r4 = Math.max(0, Math.min(255, r3 + er * d)), g4 = Math.max(0, Math.min(255, g3 + eg * d)), b4 = Math.max(0, Math.min(255, b3 + eb * d));
+                buf32[idx2] = 255 << 24 | b4 << 16 | g4 << 8 | r4;
+              }
             }
           }
-          q = network[smallpos];
-          if (i != smallpos) {
-            j = q[0];
-            q[0] = p[0];
-            p[0] = j;
-            j = q[1];
-            q[1] = p[1];
-            p[1] = j;
-            j = q[2];
-            q[2] = p[2];
-            p[2] = j;
-            j = q[3];
-            q[3] = p[3];
-            p[3] = j;
-          }
-          if (smallval != previouscol) {
-            netindex[previouscol] = startpos + i >> 1;
-            for (j = previouscol + 1; j < smallval; j++)
-              netindex[j] = i;
-            previouscol = smallval;
-            startpos = i;
+        }
+        return buf32;
+      };
+      RgbQuant.prototype.buildPal = function buildPal(noSort) {
+        if (this.palLocked || this.idxrgb.length > 0 && this.idxrgb.length <= this.colors)
+          return;
+        var histG = this.histogram, sorted = sortedHashKeys(histG, true);
+        if (sorted.length == 0)
+          throw 'Nothing has been sampled, palette cannot be built.';
+        switch (this.method) {
+        case 1:
+          var cols = this.initColors, last = sorted[cols - 1], freq = histG[last];
+          var idxi32 = sorted.slice(0, cols);
+          var pos = cols, len = sorted.length;
+          while (pos < len && histG[sorted[pos]] == freq)
+            idxi32.push(sorted[pos++]);
+          if (this.hueStats)
+            this.hueStats.inject(idxi32);
+          break;
+        case 2:
+          var idxi32 = sorted;
+          break;
+        }
+        idxi32 = idxi32.map(function (v) {
+          return +v;
+        });
+        this.reducePal(idxi32);
+        if (!noSort && this.reIndex)
+          this.sortPal();
+        if (this.useCache)
+          this.cacheHistogram(idxi32);
+        this.palLocked = true;
+      };
+      RgbQuant.prototype.palette = function palette(tuples, noSort) {
+        this.buildPal(noSort);
+        return tuples ? this.idxrgb : new Uint8Array(new Uint32Array(this.idxi32).buffer);
+      };
+      RgbQuant.prototype.prunePal = function prunePal(keep) {
+        var i32;
+        for (var j = 0; j < this.idxrgb.length; j++) {
+          if (!keep[j]) {
+            i32 = this.idxi32[j];
+            this.idxrgb[j] = null;
+            this.idxi32[j] = null;
+            delete this.i32idx[i32];
           }
         }
-        netindex[previouscol] = startpos + maxnetpos >> 1;
-        for (j = previouscol + 1; j < 256; j++)
-          netindex[j] = maxnetpos;
-      }
-      function inxsearch(b, g, r) {
-        var a, p, dist;
-        var bestd = 1e3;
-        var best = -1;
-        var i = netindex[g];
-        var j = i - 1;
-        while (i < netsize || j >= 0) {
-          if (i < netsize) {
-            p = network[i];
-            dist = p[1] - g;
-            if (dist >= bestd)
-              i = netsize;
-            else {
+        if (this.reIndex) {
+          var idxrgb = [], idxi32 = [], i32idx = {};
+          for (var j = 0, i = 0; j < this.idxrgb.length; j++) {
+            if (this.idxrgb[j]) {
+              i32 = this.idxi32[j];
+              idxrgb[i] = this.idxrgb[j];
+              i32idx[i32] = i;
+              idxi32[i] = i32;
               i++;
-              if (dist < 0)
-                dist = -dist;
-              a = p[0] - b;
-              if (a < 0)
-                a = -a;
-              dist += a;
-              if (dist < bestd) {
-                a = p[2] - r;
-                if (a < 0)
-                  a = -a;
-                dist += a;
-                if (dist < bestd) {
-                  bestd = dist;
-                  best = p[3];
-                }
-              }
             }
           }
-          if (j >= 0) {
-            p = network[j];
-            dist = g - p[1];
-            if (dist >= bestd)
-              j = -1;
-            else {
-              j--;
-              if (dist < 0)
-                dist = -dist;
-              a = p[0] - b;
-              if (a < 0)
-                a = -a;
-              dist += a;
-              if (dist < bestd) {
-                a = p[2] - r;
-                if (a < 0)
-                  a = -a;
-                dist += a;
-                if (dist < bestd) {
-                  bestd = dist;
-                  best = p[3];
-                }
-              }
-            }
-          }
+          this.idxrgb = idxrgb;
+          this.idxi32 = idxi32;
+          this.i32idx = i32idx;
         }
-        return best;
-      }
-      function learn() {
-        var i;
-        var lengthcount = pixels.length;
-        var alphadec = 30 + (samplefac - 1) / 3;
-        var samplepixels = lengthcount / (3 * samplefac);
-        var delta = ~~(samplepixels / ncycles);
-        var alpha = initalpha;
-        var radius = initradius;
-        var rad = radius >> radiusbiasshift;
-        if (rad <= 1)
-          rad = 0;
-        for (i = 0; i < rad; i++)
-          radpower[i] = alpha * ((rad * rad - i * i) * radbias / (rad * rad));
-        var step;
-        if (lengthcount < minpicturebytes) {
-          samplefac = 1;
-          step = 3;
-        } else if (lengthcount % prime1 !== 0) {
-          step = 3 * prime1;
-        } else if (lengthcount % prime2 !== 0) {
-          step = 3 * prime2;
-        } else if (lengthcount % prime3 !== 0) {
-          step = 3 * prime3;
+      };
+      RgbQuant.prototype.reducePal = function reducePal(idxi32) {
+        if (this.idxrgb.length > this.colors) {
+          var len = idxi32.length, keep = {}, uniques = 0, idx, pruned = false;
+          for (var i = 0; i < len; i++) {
+            if (uniques == this.colors && !pruned) {
+              this.prunePal(keep);
+              pruned = true;
+            }
+            idx = this.nearestIndex(idxi32[i]);
+            if (uniques < this.colors && !keep[idx]) {
+              keep[idx] = true;
+              uniques++;
+            }
+          }
+          if (!pruned) {
+            this.prunePal(keep);
+            pruned = true;
+          }
         } else {
-          step = 3 * prime4;
-        }
-        var b, g, r, j;
-        var pix = 0;
-        i = 0;
-        while (i < samplepixels) {
-          b = (pixels[pix] & 255) << netbiasshift;
-          g = (pixels[pix + 1] & 255) << netbiasshift;
-          r = (pixels[pix + 2] & 255) << netbiasshift;
-          j = contest(b, g, r);
-          altersingle(alpha, j, b, g, r);
-          if (rad !== 0)
-            alterneigh(rad, j, b, g, r);
-          pix += step;
-          if (pix >= lengthcount)
-            pix -= lengthcount;
-          i++;
-          if (delta === 0)
-            delta = 1;
-          if (i % delta === 0) {
-            alpha -= alpha / alphadec;
-            radius -= radius / radiusdec;
-            rad = radius >> radiusbiasshift;
-            if (rad <= 1)
-              rad = 0;
-            for (j = 0; j < rad; j++)
-              radpower[j] = alpha * ((rad * rad - j * j) * radbias / (rad * rad));
+          var idxrgb = idxi32.map(function (i32) {
+              return [
+                i32 & 255,
+                (i32 & 65280) >> 8,
+                (i32 & 16711680) >> 16
+              ];
+            });
+          var len = idxrgb.length, palLen = len, thold = this.initDist;
+          if (palLen > this.colors) {
+            while (palLen > this.colors) {
+              var memDist = [];
+              for (var i = 0; i < len; i++) {
+                var pxi = idxrgb[i], i32i = idxi32[i];
+                if (!pxi)
+                  continue;
+                for (var j = i + 1; j < len; j++) {
+                  var pxj = idxrgb[j], i32j = idxi32[j];
+                  if (!pxj)
+                    continue;
+                  var dist = this.colorDist(pxi, pxj);
+                  if (dist < thold) {
+                    memDist.push([
+                      j,
+                      pxj,
+                      i32j,
+                      dist
+                    ]);
+                    delete idxrgb[j];
+                    palLen--;
+                  }
+                }
+              }
+              thold += palLen > this.colors * 3 ? this.initDist : this.distIncr;
+            }
+            if (palLen < this.colors) {
+              sort.call(memDist, function (a, b) {
+                return b[3] - a[3];
+              });
+              var k = 0;
+              while (palLen < this.colors) {
+                idxrgb[memDist[k][0]] = memDist[k][1];
+                palLen++;
+                k++;
+              }
+            }
+          }
+          var len = idxrgb.length;
+          for (var i = 0; i < len; i++) {
+            if (!idxrgb[i])
+              continue;
+            this.idxrgb.push(idxrgb[i]);
+            this.idxi32.push(idxi32[i]);
+            this.i32idx[idxi32[i]] = this.idxi32.length - 1;
+            this.i32rgb[idxi32[i]] = idxrgb[i];
           }
         }
-      }
-      function buildColormap() {
-        init();
-        learn();
-        unbiasnet();
-        inxbuild();
-      }
-      this.buildColormap = buildColormap;
-      function getColormap() {
-        var map = [];
-        var index = [];
-        for (var i = 0; i < netsize; i++)
-          index[network[i][3]] = i;
-        var k = 0;
-        for (var l = 0; l < netsize; l++) {
-          var j = index[l];
-          map[k++] = network[j][0];
-          map[k++] = network[j][1];
-          map[k++] = network[j][2];
+      };
+      RgbQuant.prototype.colorStats1D = function colorStats1D(buf32) {
+        var histG = this.histogram, num = 0, col, len = buf32.length;
+        for (var i = 0; i < len; i++) {
+          col = buf32[i];
+          if ((col & 4278190080) >> 24 == 0)
+            continue;
+          if (this.hueStats)
+            this.hueStats.check(col);
+          if (col in histG)
+            histG[col]++;
+          else
+            histG[col] = 1;
         }
-        return map;
+      };
+      RgbQuant.prototype.colorStats2D = function colorStats2D(buf32, width) {
+        var boxW = this.boxSize[0], boxH = this.boxSize[1], area = boxW * boxH, boxes = makeBoxes(width, buf32.length / width, boxW, boxH), histG = this.histogram, self = this;
+        boxes.forEach(function (box) {
+          var effc = Math.max(Math.round(box.w * box.h / area) * self.boxPxls, 2), histL = {}, col;
+          iterBox(box, width, function (i) {
+            col = buf32[i];
+            if ((col & 4278190080) >> 24 == 0)
+              return;
+            if (self.hueStats)
+              self.hueStats.check(col);
+            if (col in histG)
+              histG[col]++;
+            else if (col in histL) {
+              if (++histL[col] >= effc)
+                histG[col] = histL[col];
+            } else
+              histL[col] = 1;
+          });
+        });
+        if (this.hueStats)
+          this.hueStats.inject(histG);
+      };
+      RgbQuant.prototype.sortPal = function sortPal() {
+        var self = this;
+        this.idxi32.sort(function (a, b) {
+          var idxA = self.i32idx[a], idxB = self.i32idx[b], rgbA = self.idxrgb[idxA], rgbB = self.idxrgb[idxB];
+          var hslA = rgb2hsl(rgbA[0], rgbA[1], rgbA[2]), hslB = rgb2hsl(rgbB[0], rgbB[1], rgbB[2]);
+          var hueA = rgbA[0] == rgbA[1] && rgbA[1] == rgbA[2] ? -1 : hueGroup(hslA.h, self.hueGroups);
+          var hueB = rgbB[0] == rgbB[1] && rgbB[1] == rgbB[2] ? -1 : hueGroup(hslB.h, self.hueGroups);
+          var hueDiff = hueB - hueA;
+          if (hueDiff)
+            return -hueDiff;
+          var lumDiff = lumGroup(+hslB.l.toFixed(2)) - lumGroup(+hslA.l.toFixed(2));
+          if (lumDiff)
+            return -lumDiff;
+          var satDiff = satGroup(+hslB.s.toFixed(2)) - satGroup(+hslA.s.toFixed(2));
+          if (satDiff)
+            return -satDiff;
+        });
+        this.idxi32.forEach(function (i32, i) {
+          self.idxrgb[i] = self.i32rgb[i32];
+          self.i32idx[i32] = i;
+        });
+      };
+      RgbQuant.prototype.nearestColor = function nearestColor(i32) {
+        var idx = this.nearestIndex(i32);
+        return idx === null ? 0 : this.idxi32[idx];
+      };
+      RgbQuant.prototype.nearestIndex = function nearestIndex(i32) {
+        if ((i32 & 4278190080) >> 24 == 0)
+          return null;
+        if (this.useCache && '' + i32 in this.i32idx)
+          return this.i32idx[i32];
+        var min = 1e3, idx, rgb = [
+            i32 & 255,
+            (i32 & 65280) >> 8,
+            (i32 & 16711680) >> 16
+          ], len = this.idxrgb.length;
+        for (var i = 0; i < len; i++) {
+          if (!this.idxrgb[i])
+            continue;
+          var dist = this.colorDist(rgb, this.idxrgb[i]);
+          if (dist < min) {
+            min = dist;
+            idx = i;
+          }
+        }
+        return idx;
+      };
+      RgbQuant.prototype.cacheHistogram = function cacheHistogram(idxi32) {
+        for (var i = 0, i32 = idxi32[i]; i < idxi32.length && this.histogram[i32] >= this.cacheFreq; i32 = idxi32[i++])
+          this.i32idx[i32] = this.nearestIndex(i32);
+      };
+      function HueStats(numGroups, minCols) {
+        this.numGroups = numGroups;
+        this.minCols = minCols;
+        this.stats = {};
+        for (var i = -1; i < numGroups; i++)
+          this.stats[i] = {
+            num: 0,
+            cols: []
+          };
+        this.groupsFull = 0;
       }
-      this.getColormap = getColormap;
-      this.lookupRGB = inxsearch;
-    }
-    module.exports = NeuQuant;
+      HueStats.prototype.check = function checkHue(i32) {
+        if (this.groupsFull == this.numGroups + 1)
+          this.check = function () {
+            return;
+          };
+        var r = i32 & 255, g = (i32 & 65280) >> 8, b = (i32 & 16711680) >> 16, hg = r == g && g == b ? -1 : hueGroup(rgb2hsl(r, g, b).h, this.numGroups), gr = this.stats[hg], min = this.minCols;
+        gr.num++;
+        if (gr.num > min)
+          return;
+        if (gr.num == min)
+          this.groupsFull++;
+        if (gr.num <= min)
+          this.stats[hg].cols.push(i32);
+      };
+      HueStats.prototype.inject = function injectHues(histG) {
+        for (var i = -1; i < this.numGroups; i++) {
+          if (this.stats[i].num <= this.minCols) {
+            switch (typeOf(histG)) {
+            case 'Array':
+              this.stats[i].cols.forEach(function (col) {
+                if (histG.indexOf(col) == -1)
+                  histG.push(col);
+              });
+              break;
+            case 'Object':
+              this.stats[i].cols.forEach(function (col) {
+                if (!histG[col])
+                  histG[col] = 1;
+                else
+                  histG[col]++;
+              });
+              break;
+            }
+          }
+        }
+      };
+      var Pr = .2126, Pg = .7152, Pb = .0722;
+      function rgb2lum(r, g, b) {
+        return Math.sqrt(Pr * r * r + Pg * g * g + Pb * b * b);
+      }
+      var rd = 255, gd = 255, bd = 255;
+      var euclMax = Math.sqrt(Pr * rd * rd + Pg * gd * gd + Pb * bd * bd);
+      function distEuclidean(rgb0, rgb1) {
+        var rd = rgb1[0] - rgb0[0], gd = rgb1[1] - rgb0[1], bd = rgb1[2] - rgb0[2];
+        return Math.sqrt(Pr * rd * rd + Pg * gd * gd + Pb * bd * bd) / euclMax;
+      }
+      var manhMax = Pr * rd + Pg * gd + Pb * bd;
+      function distManhattan(rgb0, rgb1) {
+        var rd = Math.abs(rgb1[0] - rgb0[0]), gd = Math.abs(rgb1[1] - rgb0[1]), bd = Math.abs(rgb1[2] - rgb0[2]);
+        return (Pr * rd + Pg * gd + Pb * bd) / manhMax;
+      }
+      function rgb2hsl(r, g, b) {
+        var max, min, h, s, l, d;
+        r /= 255;
+        g /= 255;
+        b /= 255;
+        max = Math.max(r, g, b);
+        min = Math.min(r, g, b);
+        l = (max + min) / 2;
+        if (max == min) {
+          h = s = 0;
+        } else {
+          d = max - min;
+          s = l > .5 ? d / (2 - max - min) : d / (max + min);
+          switch (max) {
+          case r:
+            h = (g - b) / d + (g < b ? 6 : 0);
+            break;
+          case g:
+            h = (b - r) / d + 2;
+            break;
+          case b:
+            h = (r - g) / d + 4;
+            break;
+          }
+          h /= 6;
+        }
+        return {
+          h: h,
+          s: s,
+          l: rgb2lum(r, g, b)
+        };
+      }
+      function hueGroup(hue, segs) {
+        var seg = 1 / segs, haf = seg / 2;
+        if (hue >= 1 - haf || hue <= haf)
+          return 0;
+        for (var i = 1; i < segs; i++) {
+          var mid = i * seg;
+          if (hue >= mid - haf && hue <= mid + haf)
+            return i;
+        }
+      }
+      function satGroup(sat) {
+        return sat;
+      }
+      function lumGroup(lum) {
+        return lum;
+      }
+      function typeOf(val) {
+        return Object.prototype.toString.call(val).slice(8, -1);
+      }
+      var sort = isArrSortStable() ? Array.prototype.sort : stableSort;
+      function stableSort(fn) {
+        var type = typeOf(this[0]);
+        if (type == 'Number' || type == 'String') {
+          var ord = {}, len = this.length, val;
+          for (var i = 0; i < len; i++) {
+            val = this[i];
+            if (ord[val] || ord[val] === 0)
+              continue;
+            ord[val] = i;
+          }
+          return this.sort(function (a, b) {
+            return fn(a, b) || ord[a] - ord[b];
+          });
+        } else {
+          var ord = this.map(function (v) {
+              return v;
+            });
+          return this.sort(function (a, b) {
+            return fn(a, b) || ord.indexOf(a) - ord.indexOf(b);
+          });
+        }
+      }
+      function isArrSortStable() {
+        var str = 'abcdefghijklmnopqrstuvwxyz';
+        return 'xyzvwtursopqmnklhijfgdeabc' == str.split('').sort(function (a, b) {
+          return ~~(str.indexOf(b) / 2.3) - ~~(str.indexOf(a) / 2.3);
+        }).join('');
+      }
+      function getImageData(img, width) {
+        var can, ctx, imgd, buf8, buf32, height;
+        switch (typeOf(img)) {
+        case 'HTMLImageElement':
+          can = document.createElement('canvas');
+          can.width = img.naturalWidth;
+          can.height = img.naturalHeight;
+          ctx = can.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+        case 'Canvas':
+        case 'HTMLCanvasElement':
+          can = can || img;
+          ctx = ctx || can.getContext('2d');
+        case 'CanvasRenderingContext2D':
+          ctx = ctx || img;
+          can = can || ctx.canvas;
+          imgd = ctx.getImageData(0, 0, can.width, can.height);
+        case 'ImageData':
+          imgd = imgd || img;
+          width = imgd.width;
+          if (typeOf(imgd.data) == 'CanvasPixelArray')
+            buf8 = new Uint8Array(imgd.data);
+          else
+            buf8 = imgd.data;
+        case 'Array':
+        case 'CanvasPixelArray':
+          buf8 = buf8 || new Uint8Array(img);
+        case 'Uint8Array':
+        case 'Uint8ClampedArray':
+          buf8 = buf8 || img;
+          buf32 = new Uint32Array(buf8.buffer);
+        case 'Uint32Array':
+          buf32 = buf32 || img;
+          buf8 = buf8 || new Uint8Array(buf32.buffer);
+          width = width || buf32.length;
+          height = buf32.length / width;
+        }
+        return {
+          can: can,
+          ctx: ctx,
+          imgd: imgd,
+          buf8: buf8,
+          buf32: buf32,
+          width: width,
+          height: height
+        };
+      }
+      function makeBoxes(wid, hgt, w0, h0) {
+        var wnum = ~~(wid / w0), wrem = wid % w0, hnum = ~~(hgt / h0), hrem = hgt % h0, xend = wid - wrem, yend = hgt - hrem;
+        var bxs = [];
+        for (var y = 0; y < hgt; y += h0)
+          for (var x = 0; x < wid; x += w0)
+            bxs.push({
+              x: x,
+              y: y,
+              w: x == xend ? wrem : w0,
+              h: y == yend ? hrem : h0
+            });
+        return bxs;
+      }
+      function iterBox(bbox, wid, fn) {
+        var b = bbox, i0 = b.y * wid + b.x, i1 = (b.y + b.h - 1) * wid + (b.x + b.w - 1), cnt = 0, incr = wid - b.w + 1, i = i0;
+        do {
+          fn.call(this, i);
+          i += ++cnt % b.w == 0 ? incr : 1;
+        } while (i <= i1);
+      }
+      function sortedHashKeys(obj, desc) {
+        var keys = [];
+        for (var key in obj)
+          keys.push(key);
+        return sort.call(keys, function (a, b) {
+          return desc ? obj[b] - obj[a] : obj[a] - obj[b];
+        });
+      }
+      this.RgbQuant = RgbQuant;
+      if (typeof module !== 'undefined' && module.exports) {
+        module.exports = RgbQuant;
+      }
+    }.call(this));
   });
   require('/gif.worker.coffee');
 }.call(this, this));
