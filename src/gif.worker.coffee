@@ -7,8 +7,10 @@ renderFrame = (frame) ->
     encoder.writeHeader()
   else
     encoder.firstFrame = false
-
-  encoder.setTransparent frame.transparent
+  if frame.index is 0
+    encoder.setTransparent null
+  else
+    encoder.setTransparent frame.transparent
   encoder.setRepeat frame.repeat
   encoder.setDelay frame.delay
   encoder.setQuality frame.quality

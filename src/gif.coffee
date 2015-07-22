@@ -91,7 +91,7 @@ class GIF extends EventEmitter
     loop
       worker = @activeWorkers.shift()
       break unless worker?
-      console.log "killing active worker"
+      # console.log "killing active worker"
       worker.terminate()
     @running = false
     @emit 'abort'
@@ -99,7 +99,7 @@ class GIF extends EventEmitter
   cleanUp: ->
     # if a user runs multiple jobs, especially with a higher number of workers, it can crash the browser
     # if you enable cleanUp, you'll have to initiate a new GIF object for each job
-    console.log "killing workers"
+    # console.log "killing workers"
     loop
       worker = @freeWorkers.shift()
       break unless worker?
@@ -111,7 +111,7 @@ class GIF extends EventEmitter
   spawnWorkers: ->
     numWorkers = Math.min(@options.workers, @frames.length)
     [@freeWorkers.length...numWorkers].forEach (i) =>
-      console.log "spawning worker #{ i }"
+      # console.log "spawning worker #{ i }"
       worker = new Worker @options.workerScript
       worker.onmessage = (event) =>
         @activeWorkers.splice @activeWorkers.indexOf(worker), 1
@@ -121,14 +121,14 @@ class GIF extends EventEmitter
     return numWorkers
 
   frameFinished: (frame) ->
-    console.log "frame #{ frame.index } finished - #{ @activeWorkers.length } active"
+    # console.log "frame #{ frame.index } finished - #{ @activeWorkers.length } active"
     @finishedFrames++
     @emit 'progress', @finishedFrames / @frames.length
     @imageParts[frame.index] = frame
     # remember calculated palette, spawn the rest of the workers
     if @options.globalPalette == true
-      @options.globalPalette = frame.globalPalette
-      console.log "global palette analyzed"
+      @options.globalPalette = frame.globalPalett
+      # console.log "global palette analyzed"
       @renderNextFrame() for i in [1...@freeWorkers.length] if @frames.length > 2
     if null in @imageParts
       @renderNextFrame()
@@ -140,7 +140,7 @@ class GIF extends EventEmitter
     for frame in @imageParts
       len += (frame.data.length - 1) * frame.pageSize + frame.cursor
     len += frame.pageSize - frame.cursor
-    console.log "rendering finished - filesize #{ Math.round(len / 1000) }kb"
+    # console.log "rendering finished - filesize #{ Math.round(len / 1000) }kb"
     data = new Uint8Array len
     offset = 0
     for frame in @imageParts
@@ -167,7 +167,7 @@ class GIF extends EventEmitter
     worker = @freeWorkers.shift()
     task = @getTask frame
 
-    console.log "starting frame #{ task.index + 1 } of #{ @frames.length }"
+    # console.log "starting frame #{ task.index + 1 } of #{ @frames.length }"
     @activeWorkers.push worker
     worker.postMessage task#, [task.data.buffer]
 

@@ -76,7 +76,7 @@ function GIFEncoder(width, height) {
   this.colorTab = null; // RGB palette
   this.usedEntry = new Array(); // active palette entries
   this.palSize = 7; // color table size (bits-1)
-  this.dispose = -1; // disposal code (-1 = use default)
+  this.dispose = 1; // disposal code (-1 = use default)
   this.firstFrame = true;
   this.sample = 10; // default sample interval for quantizer
   this.dither = false; // default dithering
@@ -108,6 +108,7 @@ GIFEncoder.prototype.setFrameRate = function(fps) {
 */
 GIFEncoder.prototype.setDispose = function(disposalCode) {
   if (disposalCode >= 0) this.dispose = disposalCode;
+  console.log('disposal: ' + disposalCode);
 };
 
 /*
@@ -149,7 +150,7 @@ GIFEncoder.prototype.addFrame = function(imageData) {
   this.getImagePixels(); // convert to correct format if necessary
   this.analyzePixels(); // build color table & map pixels
 
-  if (this.globalPalette === true) this.globalPalette = this.colorTab;
+  //if (this.globalPalette === true) this.globalPalette = this.colorTab;
 
   if (this.firstFrame) {
     this.writeLSD(); // logical screen descriptior
@@ -217,7 +218,7 @@ GIFEncoder.prototype.setGlobalPalette = function(palette) {
   calculated palette after the first frame is added.
 */
 GIFEncoder.prototype.getGlobalPalette = function() {
-  return (this.globalPalette && this.globalPalette.slice(0)) || this.globalPalette;
+  return (this.globalPalette && this.globalPalette.slice) || this.globalPalette;
 };
 
 /*
@@ -440,7 +441,7 @@ GIFEncoder.prototype.writeGraphicCtrlExt = function() {
   }
 
   if (this.dispose >= 0) {
-    disp = dispose & 7; // user override
+    disp = this.dispose & 7; // user override
   }
   disp <<= 2;
 

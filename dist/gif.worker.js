@@ -42,7 +42,11 @@
       } else {
         encoder.firstFrame = false;
       }
-      encoder.setTransparent(frame.transparent);
+      if (frame.index === 0) {
+        encoder.setTransparent(null);
+      } else {
+        encoder.setTransparent(frame.transparent);
+      }
       encoder.setRepeat(frame.repeat);
       encoder.setDelay(frame.delay);
       encoder.setQuality(frame.quality);
@@ -126,7 +130,7 @@
       this.colorTab = null;
       this.usedEntry = new Array;
       this.palSize = 7;
-      this.dispose = -1;
+      this.dispose = 1;
       this.firstFrame = true;
       this.sample = 10;
       this.dither = false;
@@ -142,6 +146,7 @@
     GIFEncoder.prototype.setDispose = function (disposalCode) {
       if (disposalCode >= 0)
         this.dispose = disposalCode;
+      console.log('disposal: ' + disposalCode);
     };
     GIFEncoder.prototype.setRepeat = function (repeat) {
       this.repeat = repeat;
@@ -154,8 +159,6 @@
       this.colorTab = this.globalPalette ? this.globalPalette : null;
       this.getImagePixels();
       this.analyzePixels();
-      if (this.globalPalette === true)
-        this.globalPalette = this.colorTab;
       if (this.firstFrame) {
         this.writeLSD();
         this.writePalette();
@@ -187,7 +190,7 @@
       this.globalPalette = palette;
     };
     GIFEncoder.prototype.getGlobalPalette = function () {
-      return this.globalPalette && this.globalPalette.slice(0) || this.globalPalette;
+      return this.globalPalette && this.globalPalette.slice || this.globalPalette;
     };
     GIFEncoder.prototype.writeHeader = function () {
       this.out.writeUTFBytes('GIF89a');
@@ -449,7 +452,7 @@
         disp = 2;
       }
       if (this.dispose >= 0) {
-        disp = dispose & 7;
+        disp = this.dispose & 7;
       }
       disp <<= 2;
       this.out.writeByte(0 | disp | 0 | transp);

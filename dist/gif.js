@@ -182,7 +182,6 @@
           worker = this.activeWorkers.shift();
           if (!(null != worker))
             break;
-          console.log('killing active worker');
           worker.terminate();
         }
         this.running = false;
@@ -190,7 +189,6 @@
       };
       GIF.prototype.cleanUp = function () {
         var worker;
-        console.log('killing workers');
         while (true) {
           worker = this.freeWorkers.shift();
           if (!(null != worker))
@@ -211,7 +209,6 @@
         }.apply(this, arguments).forEach(function (this$) {
           return function (i) {
             var worker;
-            console.log('spawning worker ' + i);
             worker = new Worker(this$.options.workerScript);
             worker.onmessage = function (this$1) {
               return function (event) {
@@ -227,13 +224,11 @@
       };
       GIF.prototype.frameFinished = function (frame) {
         var i;
-        console.log('frame ' + frame.index + ' finished - ' + this.activeWorkers.length + ' active');
         this.finishedFrames++;
         this.emit('progress', this.finishedFrames / this.frames.length);
         this.imageParts[frame.index] = frame;
         if (this.options.globalPalette === true) {
-          this.options.globalPalette = frame.globalPalette;
-          console.log('global palette analyzed');
+          this.options.globalPalette = frame.globalPalett;
           if (this.frames.length > 2)
             for (var cache$ = function () {
                   var accum$;
@@ -260,7 +255,6 @@
           len += (frame.data.length - 1) * frame.pageSize + frame.cursor;
         }
         len += frame.pageSize - frame.cursor;
-        console.log('rendering finished - filesize ' + Math.round(len / 1e3) + 'kb');
         data = new Uint8Array(len);
         offset = 0;
         for (var i$1 = 0, length$1 = this.imageParts.length; i$1 < length$1; ++i$1) {
@@ -290,7 +284,6 @@
         frame = this.frames[this.nextFrame++];
         worker = this.freeWorkers.shift();
         task = this.getTask(frame);
-        console.log('starting frame ' + (task.index + 1) + ' of ' + this.frames.length);
         this.activeWorkers.push(worker);
         return worker.postMessage(task);
       };
